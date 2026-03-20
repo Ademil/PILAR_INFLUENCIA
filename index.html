@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PilarPlanner V7.2 - Gestão Estrutural</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: sans-serif; overflow: hidden; }
+        .canvas-container { cursor: grab; }
+        .canvas-container:active { cursor: grabbing; }
+        .pilar { transition: transform 0.1s ease, box-shadow 0.2s ease; cursor: move; border-width: 1px !important; }
+        .pilar:hover { filter: brightness(1.2); }
+        .pilar.selected { outline: 2px solid #60a5fa; box-shadow: 0 0 15px rgba(96, 165, 250, 0.5); z-index: 50; }
+        input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
+        
+        /* Ajuste de opacidade para cores mais escuras/vibrantes conforme solicitado */
+        #influence-canvas { pointer-events: none; mix-blend-mode: multiply; opacity: 0.85; }
+        
+        /* Máscara para garantir que nada saia do polígono quando definido */
+        #mask-container { clip-path: none; }
+
+        /* Estilo para o cursor de Snap */
+        #snap-cursor {
+            pointer-events: none;
+            border: 2px solid #22c55e;
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            transform: translate(-50%, -50%);
+            display: none;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 p-4 flex justify-between items-center z-30 shadow-xl">
+        <div class="flex items-center gap-6">
+            <div class="flex items-center gap-3">
+                <i data-lucide="layout" class="text-blue-500"></i>
+                <h1 class="text-xl font-black tracking-tighter italic text-white underline decoration-blue-500 decoration-4">
+                    PILARPLANNER <span class="text-blue-400 text-xs font-normal ml-2 not-italic">V7.2</span>
+                </h1>
+            </div>
+            <div class="hidden lg:flex items-center gap-6 px-6 border-l border-slate-700">
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase font-bold mb-1">Área Polígono</span>
+                    <span id="stat-perimeter" class="text-white font-mono text-sm">0.00 m²</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="text-[10px] text-slate-500 uppercase font-bold mb-1">Área Coberta</span>
+                    <span id="stat-covered" class="text-blue-400 font-mono text-sm">0.00 m²</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex gap-2">
+            <button onclick="exportFullReport()" class="flex items-center gap-2 px-4 py-2 bg-emerald-700 text-white rounded text-sm hover:bg-emerald-600 transition font-bold shadow-lg">
+                <i data-lucide="file-spreadsheet" size="16"></i> Exportar Relatório Geral
+            </button>
+            <button onclick="resetView()" class="p-2 bg-slate-700 text-slate-300 rounded hover:bg-slate-600 transition">
+                <i data-lucide="refresh-cw" size="18"></i>
+            </button>
+            <label class="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded text-sm cursor-pointer transition border border-slate-600 text-white">
+                <i data-lucide="upload" size="16"></i> Planta
+                <input type="file" id="imageInput" class="hidden" accept="image/*">
+            </label>
+            <div class="h-8 w-px bg-slate-700 mx-1"></div>
+            <button id="btn-area" onclick="toggleAreaMode()" class="flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300">
+                <i data-lucide="maximize" size="16"></i> Área
+            </button>
+            <button id="btn-scale" onclick="toggleScaleMode()" class="flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300">
+                <i data-lucide="ruler" size="16"></i> Escala
+            </button>
+        </div>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden relative">
+        <main id="viewport" class="flex-1 relative bg-slate-950 overflow-hidden select-none canvas-container">
+            <div id="canvas-wrapper" class="absolute origin-top-left" style="transform: translate(0px, 0px) scale(1);">
+                <div id="canvas-content" class="relative bg-white shadow-2xl min-w-[800px] min-h-[600px]">
+                    
+                    <!-- Camada da Imagem da Planta -->
+                    <img id="planta-img" class="block opacity-60 pointer-events-none" style="display:none;">
+                    
+                    <!-- Cursor de Snap -->
+                    <div id="snap-cursor"></div>
+
+                    <!-- Container com Máscara Dinâmica -->
+                    <div id="mask-container" class="absolute inset-0 z-10 pointer-events-none">
+                         <!-- Canvas para Área de Influência (Pintura Colorida) -->
+                         <canvas id="influence-canvas" class="absolute inset-0"></canvas>
+                    </div>
+
+                    <!-- SVG Overlay para Perímetro e Calibração -->
+                    <svg id="svg-overlay" class="absolute inset-0 w-full h-full pointer-events-none z-10">
+                        <line id="calibration-line" x1="0" y1="0" x2="0" y2="0" stroke="#ea580c" stroke-width="2" stroke-dasharray="4" style="display:none;"></line>
+                        <polygon id="perimeter-poly" points="" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="8,4"></polygon>
+                        <g id="points-group"></g>
+                    </svg>
+
+                    <!-- Container de Pilares -->
+                    <div id="pilares-container" class="absolute inset-0 z-20"></div>
+
+                    <!-- Popup de Escala -->
+                    <div id="scale-popup" class="absolute z-50 bg-slate-900 border border-orange-500 p-4 rounded-xl shadow-2xl flex flex-col gap-3 w-64" style="display:none;">
+                        <span id="scale-px-label" class="text-[10px] text-orange-500 font-black uppercase tracking-widest">Calibrar</span>
+                        <input type="number" id="scale-input" value="500" class="w-full bg-slate-800 border border-slate-600 p-2 rounded text-white font-mono text-center outline-none focus:border-orange-500">
+                        <div class="flex gap-2">
+                            <button onclick="applyScale()" class="flex-1 bg-orange-600 text-white font-bold py-2 rounded text-xs hover:bg-orange-500">DEFINIR</button>
+                            <button onclick="cancelScale()" class="flex-1 bg-slate-700 text-slate-300 py-2 rounded text-xs hover:bg-slate-600">CANCELAR</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="w-[420px] bg-slate-800 border-l border-slate-700 flex flex-col shadow-2xl z-30">
+            <div class="p-6 flex flex-col gap-6 overflow-y-auto flex-1 custom-scrollbar">
+                
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 border-b border-slate-700 pb-2 text-slate-300">
+                        <i data-lucide="settings" size="18"></i>
+                        <h2 class="text-sm font-bold uppercase tracking-wider">Propriedades</h2>
+                    </div>
+
+                    <div id="pilar-editor" style="display: none;" class="space-y-4">
+                        <div class="bg-slate-900 p-4 rounded-xl border border-slate-700 flex justify-between items-center">
+                            <div>
+                                <span class="text-[10px] text-slate-500 uppercase font-black">Pilar Ativo</span>
+                                <h3 id="edit-name" class="text-2xl font-mono font-black text-blue-400">P-01</h3>
+                            </div>
+                            <button onclick="deselectPilar()" class="p-2 bg-slate-800 rounded-full hover:bg-slate-700 text-emerald-400">
+                                <i data-lucide="check" size="20"></i>
+                            </button>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4 text-xs">
+                            <div class="space-y-1">
+                                <label class="text-slate-500 uppercase font-bold">Base (cm)</label>
+                                <input type="number" id="edit-w" class="w-full bg-slate-950 border border-slate-700 p-2 rounded text-white font-mono">
+                            </div>
+                            <div class="space-y-1">
+                                <label class="text-slate-500 uppercase font-bold">Altura (cm)</label>
+                                <input type="number" id="edit-h" class="w-full bg-slate-950 border border-slate-700 p-2 rounded text-white font-mono">
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="rotatePilar()" class="flex-1 bg-slate-700 hover:bg-slate-600 p-3 rounded-lg flex items-center justify-center gap-2 transition font-bold border border-slate-600 text-[10px] uppercase">
+                                <i data-lucide="rotate-cw" size="14"></i> Girar
+                            </button>
+                            <button onclick="deletePilar()" class="flex-1 bg-red-900/20 text-red-500 p-3 rounded-lg hover:bg-red-600 hover:text-white transition font-bold text-[10px] border border-red-900/30 uppercase">
+                                Remover
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="no-selection" class="bg-slate-900/50 p-6 rounded-2xl border-2 border-dashed border-slate-700 opacity-50 text-center flex flex-col items-center gap-2">
+                        <i data-lucide="pen-tool" size="24" class="text-slate-600"></i>
+                        <p class="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Clique na planta para gerir pilares</p>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 text-blue-400 border-b border-slate-700 pb-2">
+                        <i data-lucide="weight" size="18"></i>
+                        <h3 class="text-[10px] font-black uppercase tracking-widest">Configuração de Carga</h3>
+                    </div>
+                    <div class="bg-slate-900 p-3 rounded-xl border border-slate-700">
+                        <div class="flex flex-col gap-1">
+                            <label class="text-[10px] text-slate-500 uppercase font-bold">Carga Superficial (kN/m²)</label>
+                            <input type="number" id="input-carga-un" value="12" step="0.5" oninput="calculateStats()" class="bg-slate-950 border border-slate-700 p-2 rounded text-blue-400 font-mono text-sm outline-none focus:border-blue-500">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 text-emerald-400 border-b border-slate-700 pb-2">
+                        <i data-lucide="calculator" size="18"></i>
+                        <h3 class="text-[10px] font-black uppercase tracking-widest">Inércia e Somatórios</h3>
+                    </div>
+                    <div class="bg-emerald-950/30 rounded-xl border border-emerald-900/50 overflow-hidden">
+                        <table class="w-full text-left text-[12px] font-mono">
+                            <thead class="bg-emerald-900/20 text-emerald-500 uppercase text-[9px]">
+                                <tr>
+                                    <th class="p-3">Direção</th>
+                                    <th class="p-3 text-right">Σ Inércia (cm⁴)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-emerald-900/30">
+                                <tr>
+                                    <td class="p-3 text-slate-300">Soma em X (ΣIx)</td>
+                                    <td id="total-ix" class="p-3 text-right text-emerald-400 font-bold">0</td>
+                                </tr>
+                                <tr>
+                                    <td class="p-3 text-slate-300">Soma em Y (ΣIy)</td>
+                                    <td id="total-iy" class="p-3 text-right text-emerald-400 font-bold">0</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="flex items-center gap-2 text-slate-300 border-b border-slate-700 pb-2">
+                        <i data-lucide="layers" size="16" class="text-blue-500"></i>
+                        <h3 class="text-[10px] font-black uppercase tracking-widest">Tabela de Cargas por Pilar</h3>
+                    </div>
+                    <div class="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+                        <table class="w-full text-left text-[11px] font-mono">
+                            <thead class="bg-slate-950 text-slate-500 uppercase text-[9px]">
+                                <tr>
+                                    <th class="p-2">Pilar</th>
+                                    <th class="p-2 text-right">Área (m²)</th>
+                                    <th class="p-2 text-right">Carga (kN)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="stats-table-body" class="divide-y divide-slate-800">
+                                <tr><td colspan="3" class="p-4 text-center text-slate-600 italic">Nenhum dado</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-4 border-t border-slate-700 bg-slate-800/50">
+                <button onclick="resetProject()" class="w-full py-2 text-red-400 hover:text-red-300 text-[10px] font-bold uppercase tracking-widest transition flex items-center justify-center gap-2">
+                    <i data-lucide="trash-2" size="12"></i> Limpar Tudo
+                </button>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        // --- ESTADO GLOBAL ---
+        let state = {
+            image: null,
+            scalePxPerCm: 1,
+            pilares: [],
+            selectedId: null,
+            perimeterPoints: [],
+            isCalibrating: false,
+            isDrawingArea: false,
+            calibrationPoints: [],
+            zoom: 1,
+            offset: { x: 0, y: 0 },
+            isPanning: false,
+            isDragging: false,
+            lastMouse: { x: 0, y: 0 },
+            hasMoved: false,
+            totalIx: 0,
+            totalIy: 0,
+            polyAreaM2: 0,
+            totalCoveredM2: 0,
+            snapPoint: null // Ponto de snap ativo
+        };
+
+        const colors = [
+            'rgba(239, 68, 68, 1)',  'rgba(59, 130, 246, 1)', 'rgba(34, 197, 94, 1)',
+            'rgba(234, 179, 8, 1)',  'rgba(168, 85, 247, 1)', 'rgba(236, 72, 153, 1)',
+            'rgba(20, 184, 166, 1)', 'rgba(249, 115, 22, 1)', 'rgba(100, 116, 139, 1)'
+        ];
+
+        const viewport = document.getElementById('viewport');
+        const wrapper = document.getElementById('canvas-wrapper');
+        const content = document.getElementById('canvas-content');
+        const pContainer = document.getElementById('pilares-container');
+        const svg = document.getElementById('svg-overlay');
+        const influenceCanvas = document.getElementById('influence-canvas');
+        const maskContainer = document.getElementById('mask-container');
+        const snapCursor = document.getElementById('snap-cursor');
+        const ctx = influenceCanvas.getContext('2d');
+
+        window.onload = () => {
+            lucide.createIcons();
+            setupEventListeners();
+        };
+
+        function setupEventListeners() {
+            document.getElementById('imageInput').onchange = handleImageUpload;
+            viewport.onmousedown = onMouseDown;
+            window.onmousemove = onMouseMove;
+            window.onmouseup = onMouseUp;
+            viewport.onwheel = onWheel;
+            
+            viewport.oncontextmenu = (e) => {
+                e.preventDefault();
+                if (state.isDrawingArea && state.perimeterPoints.length > 0) {
+                    state.perimeterPoints.pop();
+                    renderSVG();
+                    calculateStats();
+                }
+            };
+            
+            content.onclick = onCanvasClick;
+            document.getElementById('edit-w').oninput = (e) => updateSelectedPilar({ widthCm: parseInt(e.target.value) || 1 });
+            document.getElementById('edit-h').oninput = (e) => updateSelectedPilar({ heightCm: parseInt(e.target.value) || 1 });
+        }
+
+        // --- LÓGICA DE OSNAP ---
+        function getSnapPoint(rawX, rawY) {
+            const threshold = 15 / state.zoom;
+            let bestPoint = null;
+            let minDist = threshold;
+
+            // 1. Endpoints (Vértices)
+            state.perimeterPoints.forEach(p => {
+                const d = Math.hypot(p.x - rawX, p.y - rawY);
+                if (d < minDist) {
+                    minDist = d;
+                    bestPoint = { x: p.x, y: p.y, type: 'endpoint' };
+                }
+            });
+
+            if (bestPoint) return bestPoint;
+
+            // 2. Midpoints e Nearest (Nas arestas)
+            for (let i = 0; i < state.perimeterPoints.length; i++) {
+                const p1 = state.perimeterPoints[i];
+                const p2 = state.perimeterPoints[(i + 1) % state.perimeterPoints.length];
+                
+                // Ponto médio
+                const mx = (p1.x + p2.x) / 2;
+                const my = (p1.y + p2.y) / 2;
+                const dm = Math.hypot(mx - rawX, my - rawY);
+                if (dm < minDist) {
+                    minDist = dm;
+                    bestPoint = { x: mx, y: my, type: 'midpoint' };
+                }
+
+                // Nearest (Projeção na linha)
+                const projection = getProjection(rawX, rawY, p1, p2);
+                if (projection) {
+                    const dp = Math.hypot(projection.x - rawX, projection.y - rawY);
+                    if (dp < minDist) {
+                        minDist = dp;
+                        bestPoint = { x: projection.x, y: projection.y, type: 'nearest' };
+                    }
+                }
+            }
+
+            return bestPoint;
+        }
+
+        function getProjection(px, py, a, b) {
+            const atob = { x: b.x - a.x, y: b.y - a.y };
+            const atop = { x: px - a.x, y: py - a.y };
+            const lenSq = atob.x * atob.x + atob.y * atob.y;
+            let t = (atop.x * atob.x + atop.y * atob.y) / lenSq;
+            if (t < 0 || t > 1) return null;
+            return { x: a.x + t * atob.x, y: a.y + t * atob.y };
+        }
+
+        function handleImageUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = document.getElementById('planta-img');
+                img.src = event.target.result;
+                img.style.display = 'block';
+                img.onload = () => {
+                    content.style.width = img.width + 'px';
+                    content.style.height = img.height + 'px';
+                    influenceCanvas.width = img.width;
+                    influenceCanvas.height = img.height;
+                    calculateStats();
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function onMouseDown(e) {
+            state.hasMoved = false;
+            if (e.button === 2 || e.button === 1) {
+                state.isPanning = true;
+                state.lastMouse = { x: e.clientX, y: e.clientY };
+                return;
+            }
+        }
+
+        function onMouseMove(e) {
+            const rect = content.getBoundingClientRect();
+            const rawX = (e.clientX - rect.left) / state.zoom;
+            const rawY = (e.clientY - rect.top) / state.zoom;
+
+            // Executar OSNAP
+            state.snapPoint = getSnapPoint(rawX, rawY);
+            if (state.snapPoint && (state.isDrawingArea || state.isDragging)) {
+                snapCursor.style.display = 'block';
+                snapCursor.style.left = state.snapPoint.x + 'px';
+                snapCursor.style.top = state.snapPoint.y + 'px';
+            } else {
+                snapCursor.style.display = 'none';
+            }
+
+            if (state.isPanning) {
+                const dx = e.clientX - state.lastMouse.x;
+                const dy = e.clientY - state.lastMouse.y;
+                state.offset.x += dx;
+                state.offset.y += dy;
+                state.lastMouse = { x: e.clientX, y: e.clientY };
+                state.hasMoved = true;
+                updateTransform();
+            }
+
+            if (state.isDragging && state.selectedId) {
+                const targetX = state.snapPoint ? state.snapPoint.x : rawX;
+                const targetY = state.snapPoint ? state.snapPoint.y : rawY;
+                updatePilarCoords(state.selectedId, targetX, targetY);
+                state.hasMoved = true;
+            }
+
+            if (state.isCalibrating && state.calibrationPoints.length === 1) {
+                const line = document.getElementById('calibration-line');
+                line.setAttribute('x2', rawX);
+                line.setAttribute('y2', rawY);
+            }
+        }
+
+        function onMouseUp() {
+            state.isPanning = false;
+            state.isDragging = false;
+        }
+
+        function onWheel(e) {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.min(Math.max(state.zoom * delta, 0.2), 5);
+            state.zoom = newZoom;
+            updateTransform();
+        }
+
+        function updateTransform() {
+            wrapper.style.transform = `translate(${state.offset.x}px, ${state.offset.y}px) scale(${state.zoom})`;
+        }
+
+        function resetView() {
+            state.zoom = 1;
+            state.offset = { x: 0, y: 0 };
+            updateTransform();
+        }
+
+        function onCanvasClick(e) {
+            if (state.hasMoved || state.isPanning) return;
+            const rect = content.getBoundingClientRect();
+            const rawX = (e.clientX - rect.left) / state.zoom;
+            const rawY = (e.clientY - rect.top) / state.zoom;
+            
+            // Usar ponto de snap se disponível
+            const x = state.snapPoint ? state.snapPoint.x : rawX;
+            const y = state.snapPoint ? state.snapPoint.y : rawY;
+
+            if (state.isCalibrating) {
+                state.calibrationPoints.push({ x, y });
+                const line = document.getElementById('calibration-line');
+                line.setAttribute('x1', state.calibrationPoints[0].x);
+                line.setAttribute('y1', state.calibrationPoints[0].y);
+                line.style.display = 'block';
+                if (state.calibrationPoints.length === 2) {
+                    const dist = Math.sqrt(Math.pow(state.calibrationPoints[1].x - state.calibrationPoints[0].x, 2) + Math.pow(state.calibrationPoints[1].y - state.calibrationPoints[0].y, 2));
+                    showScalePopup(x, y, dist);
+                }
+                return;
+            }
+
+            if (state.isDrawingArea) {
+                state.perimeterPoints.push({ x, y });
+                renderSVG();
+                updateMask();
+                calculateStats();
+                return;
+            }
+
+            const clicked = findPilarAt(rawX, rawY);
+            if (clicked) selectPilar(clicked.id);
+            else createPilar(x, y);
+        }
+
+        function updateMask() {
+            if (state.perimeterPoints.length >= 3) {
+                const points = state.perimeterPoints.map(p => `${p.x}px ${p.y}px`).join(', ');
+                maskContainer.style.clipPath = `polygon(${points})`;
+                pContainer.style.clipPath = `polygon(${points})`;
+            } else {
+                maskContainer.style.clipPath = 'none';
+                pContainer.style.clipPath = 'none';
+            }
+        }
+
+        function createPilar(x, y) {
+            const id = Date.now();
+            state.pilares.push({
+                id, nome: `P-${(state.pilares.length + 1).toString().padStart(2, '0')}`,
+                x, y, widthCm: 15, heightCm: 40, areaM2: 0,
+                color: colors[state.pilares.length % colors.length]
+            });
+            renderPilares();
+            selectPilar(id);
+            calculateStats();
+        }
+
+        function renderPilares() {
+            pContainer.innerHTML = '';
+            state.pilares.forEach(p => {
+                const div = document.createElement('div');
+                const w = p.widthCm * state.scalePxPerCm;
+                const h = p.heightCm * state.scalePxPerCm;
+                div.className = `pilar absolute -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-sm ${state.selectedId === p.id ? 'selected' : ''}`;
+                
+                const isValid = p.areaM2 >= 12 && p.areaM2 <= 24;
+                div.style.backgroundColor = isValid ? '#1e293b' : '#dc2626';
+                div.style.borderColor = isValid ? '#475569' : '#f87171';
+                div.style.borderWidth = '1px';
+                div.style.borderStyle = 'solid';
+
+                div.style.left = p.x + 'px';
+                div.style.top = p.y + 'px';
+                div.style.width = Math.max(6, w) + 'px';
+                div.style.height = Math.max(6, h) + 'px';
+                div.innerHTML = `<span style="font-size: 8px" class="text-white font-bold opacity-80 uppercase">${p.nome}</span>`;
+                div.onmousedown = (e) => {
+                    if(e.button === 0) {
+                        e.stopPropagation();
+                        selectPilar(p.id);
+                        state.isDragging = true;
+                    }
+                };
+                pContainer.appendChild(div);
+            });
+        }
+
+        function renderSVG() {
+            const poly = document.getElementById('perimeter-poly');
+            const pointsGroup = document.getElementById('points-group');
+            const pointsStr = state.perimeterPoints.map(p => `${p.x},${p.y}`).join(' ');
+            poly.setAttribute('points', pointsStr);
+            pointsGroup.innerHTML = '';
+            state.perimeterPoints.forEach(p => {
+                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                circle.setAttribute('cx', p.x);
+                circle.setAttribute('cy', p.y);
+                circle.setAttribute('r', 4);
+                circle.setAttribute('fill', '#3b82f6');
+                circle.style.pointerEvents = 'auto';
+                pointsGroup.appendChild(circle);
+            });
+        }
+
+        function calculateStats() {
+            const w = influenceCanvas.width;
+            const h = influenceCanvas.height;
+            if (w === 0 || h === 0) return;
+
+            ctx.clearRect(0, 0, w, h);
+
+            state.totalIx = 0; state.totalIy = 0;
+            state.pilares.forEach(p => {
+                state.totalIx += (p.widthCm * Math.pow(p.heightCm, 3)) / 12;
+                state.totalIy += (p.heightCm * Math.pow(p.widthCm, 3)) / 12;
+            });
+            document.getElementById('total-ix').innerText = Math.round(state.totalIx).toLocaleString('pt-BR');
+            document.getElementById('total-iy').innerText = Math.round(state.totalIy).toLocaleString('pt-BR');
+
+            state.polyAreaM2 = 0;
+            if (state.perimeterPoints.length >= 3) {
+                let a = 0;
+                for (let i = 0; i < state.perimeterPoints.length; i++) {
+                    let j = (i + 1) % state.perimeterPoints.length;
+                    a += state.perimeterPoints[i].x * state.perimeterPoints[j].y;
+                    a -= state.perimeterPoints[j].x * state.perimeterPoints[i].y;
+                }
+                state.polyAreaM2 = (Math.abs(a) / 2) / Math.pow(state.scalePxPerCm, 2) / 10000;
+            }
+            document.getElementById('stat-perimeter').innerText = state.polyAreaM2.toFixed(2) + " m²";
+
+            const step = 15;
+            const counts = new Array(state.pilares.length).fill(0);
+            const pixelAreaM2 = Math.pow(step / state.scalePxPerCm, 2) / 10000;
+
+            if (state.pilares.length > 0) {
+                for (let x = 0; x < w; x += step) {
+                    for (let y = 0; y < h; y += step) {
+                        if (state.perimeterPoints.length >= 3 && !isPointInPoly({ x, y }, state.perimeterPoints)) continue;
+                        
+                        let minDist = Infinity, closestIdx = -1;
+                        state.pilares.forEach((p, idx) => {
+                            const d = Math.pow(x - p.x, 2) + Math.pow(y - p.y, 2);
+                            if (d < minDist) { minDist = d; closestIdx = idx; }
+                        });
+                        
+                        if (closestIdx !== -1) {
+                            counts[closestIdx]++;
+                            ctx.fillStyle = state.pilares[closestIdx].color;
+                            ctx.fillRect(x, y, step, step);
+                        }
+                    }
+                }
+            }
+
+            state.pilares.forEach((p, i) => p.areaM2 = counts[i] * pixelAreaM2);
+            state.totalCoveredM2 = counts.reduce((a, b) => a + b, 0) * pixelAreaM2;
+            document.getElementById('stat-covered').innerText = state.totalCoveredM2.toFixed(2) + " m²";
+
+            renderStatsTable();
+            renderPilares();
+        }
+
+        function isPointInPoly(p, poly) {
+            let inside = false;
+            for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                if (((poly[i].y > p.y) !== (poly[j].y > p.y)) && (p.x < (poly[j].x - poly[i].x) * (p.y - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)) inside = !inside;
+            }
+            return inside;
+        }
+
+        function renderStatsTable() {
+            const tbody = document.getElementById('stats-table-body');
+            const cargaUn = parseFloat(document.getElementById('input-carga-un').value) || 0;
+            if (state.pilares.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-slate-600 italic">Nenhum dado</td></tr>';
+                return;
+            }
+            tbody.innerHTML = state.pilares.map(p => {
+                const cargaTotal = p.areaM2 * cargaUn;
+                return `
+                <tr onclick="selectPilar(${p.id})" class="cursor-pointer ${state.selectedId === p.id ? 'bg-blue-900/20' : 'hover:bg-slate-800/50'}">
+                    <td class="p-2 text-white font-bold flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full" style="background-color: ${p.color}"></div>
+                        ${p.nome}
+                    </td>
+                    <td class="p-2 text-right ${p.areaM2 >= 12 && p.areaM2 <= 24 ? 'text-emerald-400' : 'text-red-400 font-bold'}">${p.areaM2.toFixed(2)}</td>
+                    <td class="p-2 text-right text-blue-400">${cargaTotal.toFixed(1)}</td>
+                </tr>
+            `}).join('');
+        }
+
+        function exportFullReport() {
+            if (state.pilares.length === 0 && state.perimeterPoints.length === 0) return;
+            
+            const cargaUn = parseFloat(document.getElementById('input-carga-un').value) || 0;
+            let csv = "";
+
+            csv += "### SECAO 1: PLANTA BAIXA ###\n";
+            csv += "Descricao;Valor;Unidade\n";
+            csv += `Area do Poligono;${state.polyAreaM2.toFixed(4).replace('.', ',')};m2\n`;
+            csv += `Area Coberta/Influencia Total;${state.totalCoveredM2.toFixed(4).replace('.', ',')};m2\n`;
+            csv += `Carga Superficial Aplicada;${cargaUn.toFixed(2).replace('.', ',')};kN/m2\n\n`;
+
+            csv += "### SECAO 2: QUADRO DE PILARES ###\n";
+            csv += "Pilar;Base (cm);Altura (cm);Area Influencia (m2);Carga Estimada (kN)\n";
+            state.pilares.forEach(p => {
+                const carga = p.areaM2 * cargaUn;
+                csv += `${p.nome};${p.widthCm};${p.heightCm};${p.areaM2.toFixed(2).replace('.', ',')};${carga.toFixed(1).replace('.', ',')}\n`;
+            });
+            csv += "\n";
+
+            csv += "### SECAO 3: INERCIA E SOMATORIOS ###\n";
+            csv += "Direcao;Valor Total;Unidade\n";
+            csv += `Soma em X (Sigma Ix);${Math.round(state.totalIx)};cm4\n`;
+            csv += `Soma em Y (Sigma Iy);${Math.round(state.totalIy)};cm4\n`;
+
+            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", `Relatorio_Estrutural_${new Date().toLocaleDateString()}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function selectPilar(id) {
+            state.selectedId = id;
+            const p = state.pilares.find(p => p.id === id);
+            document.getElementById('pilar-editor').style.display = 'block';
+            document.getElementById('no-selection').style.display = 'none';
+            document.getElementById('edit-name').innerText = p.nome;
+            document.getElementById('edit-w').value = p.widthCm;
+            document.getElementById('edit-h').value = p.heightCm;
+            renderPilares();
+        }
+
+        function deselectPilar() {
+            state.selectedId = null;
+            document.getElementById('pilar-editor').style.display = 'none';
+            document.getElementById('no-selection').style.display = 'flex';
+            renderPilares();
+        }
+
+        function updateSelectedPilar(data) {
+            if (!state.selectedId) return;
+            const idx = state.pilares.findIndex(p => p.id === state.selectedId);
+            state.pilares[idx] = { ...state.pilares[idx], ...data };
+            renderPilares();
+            calculateStats();
+        }
+
+        function updatePilarCoords(id, x, y) {
+            const idx = state.pilares.findIndex(p => p.id === id);
+            state.pilares[idx].x = x;
+            state.pilares[idx].y = y;
+            renderPilares();
+            calculateStats();
+        }
+
+        function rotatePilar() {
+            const p = state.pilares.find(p => p.id === state.selectedId);
+            const w = p.widthCm;
+            const h = p.heightCm;
+            updateSelectedPilar({ widthCm: h, heightCm: w });
+            document.getElementById('edit-w').value = h;
+            document.getElementById('edit-h').value = w;
+        }
+
+        function deletePilar() {
+            state.pilares = state.pilares.filter(p => p.id !== state.selectedId);
+            deselectPilar();
+            calculateStats();
+        }
+
+        function findPilarAt(x, y) {
+            return state.pilares.find(p => {
+                const w = p.widthCm * state.scalePxPerCm;
+                const h = p.heightCm * state.scalePxPerCm;
+                return x >= p.x - w/2 && x <= p.x + w/2 && y >= p.y - h/2 && y <= p.y + h/2;
+            });
+        }
+
+        function toggleScaleMode() {
+            state.isCalibrating = !state.isCalibrating;
+            state.isDrawingArea = false;
+            state.calibrationPoints = [];
+            document.getElementById('calibration-line').style.display = 'none';
+            document.getElementById('btn-scale').className = state.isCalibrating ? 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-orange-600 text-white shadow-lg' : 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300';
+            document.getElementById('btn-area').className = 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300';
+        }
+
+        function toggleAreaMode() {
+            state.isDrawingArea = !state.isDrawingArea;
+            state.isCalibrating = false;
+            document.getElementById('btn-area').className = state.isDrawingArea ? 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-blue-600 text-white shadow-lg' : 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300';
+            document.getElementById('btn-scale').className = 'flex items-center gap-2 px-4 py-2 rounded text-sm font-bold transition bg-slate-700 text-slate-300';
+        }
+
+        function showScalePopup(x, y, px) {
+            const popup = document.getElementById('scale-popup');
+            popup.style.display = 'flex';
+            popup.style.left = (x + 20) + 'px';
+            popup.style.top = y + 'px';
+            document.getElementById('scale-px-label').innerText = `CALIBRAR: ${px.toFixed(1)} PX`;
+            state.tempDistPx = px;
+        }
+
+        function applyScale() {
+            const val = parseFloat(document.getElementById('scale-input').value);
+            if (val > 0) state.scalePxPerCm = state.tempDistPx / val;
+            cancelScale();
+            calculateStats();
+        }
+
+        function cancelScale() {
+            state.isCalibrating = false;
+            state.calibrationPoints = [];
+            document.getElementById('scale-popup').style.display = 'none';
+            document.getElementById('calibration-line').style.display = 'none';
+            toggleScaleMode();
+        }
+
+        function resetProject() {
+            if (confirm("Deseja apagar tudo?")) {
+                state.pilares = [];
+                state.perimeterPoints = [];
+                state.selectedId = null;
+                ctx.clearRect(0, 0, influenceCanvas.width, influenceCanvas.height);
+                updateMask();
+                renderPilares();
+                renderSVG();
+                calculateStats();
+                deselectPilar();
+            }
+        }
+    </script>
+</body>
+</html>
